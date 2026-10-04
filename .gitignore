@@ -1,0 +1,14 @@
+config.yaml
+sessions/
+resume/
+logs/
+screenshots/
+*.db
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+.coverage
+build/
+dist/
+*.egg-info/
