@@ -1,14 +1,58 @@
-config.yaml
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Environment variables
+.env
+.env.local
+
+# IDEs
+.vscode/
+.idea/
+
+# Application Data
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Logs and Temp Data
+logs/
+*.log
+*.html
+
+# Data Files (Ignored to prevent committing personal details or massive dumps)
+*.json
+*.csv
+*.md
+
+# Keep the SKILL files or documentation if any, but ignore generated reports
+!README.md
+
+# Ignore all the scratch scripts we generated for testing
+dump_*.py
+test_cutshort_soup.py
+test_db_persistence.py
+patch_*.py
+fix_*.py
+parse_superclaims.py
+generate_passage_report.py
+preview_superclaims.py
+
+# Sensitive Data
 sessions/
 resume/
-logs/
-screenshots/
-*.db
-.venv/
-venv/
-__pycache__/
-.pytest_cache/
-.coverage
-build/
-dist/
+config.yaml
+
+# Python builds
 *.egg-info/
+uv.lock
+
+# Test artifacts
+auto_apply/dry_run_output*.txt
+auto_apply/test_*.py
+!auto_apply/tests/
+auto_apply/new_funcs.py
+auto_apply/patch.py
