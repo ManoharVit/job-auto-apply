@@ -17,21 +17,7 @@ def test_dry_run_nonexistent_db(tmp_path):
 def test_dry_run_old_schema(tmp_path):
     db_path = tmp_path / "old_schema.db"
     con = sqlite3.connect(db_path)
-    con.execute("""
-    CREATE TABLE applications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        platform TEXT NOT NULL,
-        job_url TEXT UNIQUE NOT NULL,
-        title TEXT,
-        company TEXT,
-        location TEXT,
-        match_score REAL,
-        status TEXT DEFAULT 'pending',
-        error_message TEXT,
-        applied_at TIMESTAMP,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """)
+    con.execute("CREATE TABLE applications (id INTEGER PRIMARY KEY, platform TEXT, job_url TEXT, title TEXT, status TEXT)")
     con.execute("INSERT INTO applications (platform, job_url, title, status) VALUES ('linkedin', 'http://old.com/1', 'Python Developer', 'pending')")
     con.commit()
     con.close()
@@ -53,23 +39,7 @@ def test_dry_run_old_schema(tmp_path):
 def test_dry_run_new_schema(tmp_path):
     db_path = tmp_path / "new_schema.db"
     con = sqlite3.connect(db_path)
-    con.execute("""
-    CREATE TABLE applications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        platform TEXT NOT NULL,
-        job_url TEXT UNIQUE NOT NULL,
-        title TEXT,
-        company TEXT,
-        location TEXT,
-        description TEXT,
-        experience TEXT,
-        match_score REAL,
-        status TEXT DEFAULT 'pending',
-        error_message TEXT,
-        applied_at TIMESTAMP,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """)
+    con.execute("CREATE TABLE applications (id INTEGER PRIMARY KEY AUTOINCREMENT, platform TEXT NOT NULL, job_url TEXT UNIQUE NOT NULL, title TEXT, company TEXT, location TEXT, description TEXT, experience TEXT, match_score REAL, status TEXT DEFAULT 'pending', error_message TEXT, applied_at TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
     con.execute("INSERT INTO applications (platform, job_url, title, description, experience, status) VALUES ('linkedin', 'http://new.com/1', 'Python Developer', 'Good job', '2 years', 'pending')")
     con.commit()
     con.close()

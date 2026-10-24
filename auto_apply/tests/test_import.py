@@ -38,8 +38,8 @@ def test_normalize_url():
 
 def test_import_jobs_new(temp_tracker):
     jobs = [
-        {"job_url": "https://example.com/1", "title": "Python Developer", "company": "A", "location": "Remote", "description": "Good description", "experience": "2 years"},
-        {"job_url": "https://example.com/2", "title": "Java Developer", "company": "B", "location": "Remote", "description": "Good description", "experience": "2 years"}
+        {"job_url": "https://example.com/1", "title": "Python Developer", "company": "A", "location": "Remote", "description": "Python and FastAPI backend development", "experience": "2 years", "application_open": "Open"},
+        {"job_url": "https://example.com/2", "title": "Java Developer", "company": "B", "location": "Remote", "description": "Good description", "experience": "2 years", "application_open": "Open"}
     ]
     
     stats = import_jobs(jobs, temp_tracker, PROFILE_CONFIG, dry_run=False)
@@ -127,4 +127,3 @@ def test_dry_run_does_not_save(temp_tracker):
     
     pending = temp_tracker.get_pending_jobs()
     assert len(pending) == 0
-

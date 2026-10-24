@@ -196,7 +196,7 @@ class TestEligibility:
         assert eligible is not False, f"Backend Developer wrongly excluded: {reason}"
 
     def test_python_developer_eligible(self):
-        job = _job("Python Developer", location="Remote", description="Job details", experience="2 years")
+        job = _job("Python Developer", location="Remote", description="Python backend development", experience="2 years", application_open="Open")
         score_data = score_job(job, PROFILE_CONFIG)
         eligible, reason = is_eligible(job, PROFILE_CONFIG, score_data)
         assert eligible is True, f"Python Developer not eligible: {reason}"

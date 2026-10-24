@@ -11,6 +11,10 @@ Safety rules enforced by this module:
 """
 
 import time
+from .challenge_handler import handle_challenge
+
+class LimitExceededError(Exception):
+    pass
 
 # Type aliases for clarity; playwright is imported lazily inside
 # execute_application_automated to keep module importable without it.
@@ -244,13 +248,16 @@ def check_success_evidence(page) -> str | None:
 # LinkedIn Easy Apply
 # ---------------------------------------------------------------------------
 
-def execute_linkedin(page, job: dict, config: dict):
+def execute_linkedin(page, job: dict, config: dict, unattended=False):
     url = job.get("job_url") or job.get("apply_url")
     page.goto(url)
     
     # Wait for the page to load
     page.wait_for_load_state("domcontentloaded")
     time.sleep(3)
+    chal_status = handle_challenge(page, unattended=unattended)
+    if chal_status:
+        return chal_status, "Platform halted: CAPTCHA / bot challenge detected"
 
     # Helper to find Easy Apply button
     def get_easy_apply_btn():
@@ -371,12 +378,15 @@ def execute_linkedin(page, job: dict, config: dict):
 # Naukri
 # ---------------------------------------------------------------------------
 
-def execute_naukri(page, job: dict, config: dict):
+def execute_naukri(page, job: dict, config: dict, unattended=False):
     url = job.get("job_url") or job.get("apply_url")
     page.goto(url)
     
     page.wait_for_load_state("domcontentloaded")
     time.sleep(3)
+    chal_status = handle_challenge(page, unattended=unattended)
+    if chal_status:
+        return chal_status, "Platform halted: CAPTCHA / bot challenge detected"
 
     def get_apply_btn():
         return page.locator("button#apply-button, button.apply-button, button:has-text('Apply')")
@@ -477,39 +487,73 @@ def execute_naukri(page, job: dict, config: dict):
 # Entry point for the orchestrator
 # ---------------------------------------------------------------------------
 
-def execute_application_automated(job, config):
-    """Open a browser and run the appropriate platform flow."""
-    import os
-    from pathlib import Path
-    
-    url = job.get("job_url") or job.get("apply_url", "")
-    platform = job.get("platform", "")
 
-    if "linkedin" in url.lower() or platform == "linkedin":
-        runner = execute_linkedin
-    else:
-        runner = execute_naukri
+def execute_application_automated(job, config, unattended=False, on_before_submit=None, expected_profile=None):
+    """Dispatch a supported adapter using the explicitly selected browser profile."""
+    from urllib.parse import urlparse
+    from .authorization import AuthorizationError
+    from .settings import (
+        approved_fixture_url, browser_profile, fixture_mode, greenhouse_identity, job_application_url,
+    )
+    from .submission_guard import SubmissionBlocked
+
+    platform = str(job.get("platform", "")).lower()
+    if platform != "greenhouse":
+        return "paused", "This platform is for discovery/manual review, not automatic submission."
+    try:
+        url = job_application_url(job)
+    except ValueError as exc:
+        return "paused", str(exc)
+    fixture = approved_fixture_url(url, config)
+    if not greenhouse_identity(url) and not fixture:
+        return "paused", "The URL is outside the supported Greenhouse job origins."
+    if on_before_submit is None:
+        return "paused", "Run an approved batch or resume command to authorize this job."
+    try:
+        profile = browser_profile(config)
+        if expected_profile is not None and profile != expected_profile:
+            return "deferred", "The active browser profile differs from the approved session."
+    except ValueError as exc:
+        return "failed", str(exc)
 
     from playwright.sync_api import sync_playwright
+    from .adapters.greenhouse import apply_unattended
+    profile.mkdir(parents=True, exist_ok=True)
+    attempted = False
+    def submit_boundary():
+        nonlocal attempted
+        attempt_id = on_before_submit()
+        attempted = True
+        return attempt_id
 
-    # Use a persistent user_data_dir so logins are saved across runs
-    user_data_dir = Path(__file__).resolve().parents[3] / "sessions" / "chromium_profile"
-    os.makedirs(user_data_dir, exist_ok=True)
-
-    with sync_playwright() as p:
+    with sync_playwright() as playwright:
+        context = None
         try:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=str(user_data_dir),
-                headless=False
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=str(profile),
+                headless=config.get("browser", {}).get("headless", False) is True,
+                service_workers="block" if fixture_mode(config) else "allow",
             )
-        except Exception as e:
-            return "failed", f"Failed to open browser (is the profile already open?). Please close it and try again. Error: {type(e).__name__}"
-
-        page = context.pages[0] if context.pages else context.new_page()
-        try:
-            status, msg = runner(page, job, config)
-            return status, msg
-        except Exception as e:
-            return "failed", f"Browser error: {type(e).__name__}"
+            if fixture_mode(config):
+                def isolated_request(route):
+                    parsed = urlparse(route.request.url)
+                    if parsed.hostname in ("localhost", "127.0.0.1", "::1"):
+                        route.fallback()
+                    else:
+                        route.abort()
+                context.route("http**://**/*", isolated_request)
+            page = context.new_page()
+            return apply_unattended(
+                page, job, config, unattended=unattended, on_before_submit=submit_boundary,
+            )
+        except (SubmissionBlocked, AuthorizationError) as exc:
+            return "deferred", str(exc)
+        except Exception as exc:
+            return (
+                "unconfirmed" if attempted else "failed",
+                f"Browser operation failed ({type(exc).__name__}); "
+                + ("reconcile this attempt before retrying." if attempted else "no submission attempt was reserved."),
+            )
         finally:
-            context.close()
+            if context is not None:
+                context.close()

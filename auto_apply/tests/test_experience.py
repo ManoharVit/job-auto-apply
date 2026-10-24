@@ -4,9 +4,10 @@ from auto_apply.orchestrator import score_job, is_eligible
 def test_experience_insufficient():
     job = {
         "title": "Python Developer",
-        "description": "Valid job description.",
+        "description": "Python backend development.",
         "location": "Remote",
-        "experience": "Requires 3+ years of experience"
+        "experience": "Requires 3+ years of experience",
+        "application_open": "Open"
     }
     config = {
         "profile": {"skills": ["Python"], "locations": ["Remote"]},
@@ -22,9 +23,10 @@ def test_experience_insufficient():
 def test_experience_sufficient():
     job = {
         "title": "Python Developer",
-        "description": "Valid job description.",
+        "description": "Python backend development.",
         "location": "Remote",
-        "experience": "Requires 1-2 years of experience"
+        "experience": "Requires 1-2 years of experience",
+        "application_open": "Open"
     }
     config = {
         "profile": {"skills": ["Python"], "locations": ["Remote"]},
@@ -39,9 +41,10 @@ def test_experience_sufficient():
 def test_experience_unknown():
     job = {
         "title": "Python Developer",
-        "description": "Valid job description.",
+        "description": "Python backend development.",
         "location": "Remote",
-        "experience": ""
+        "experience": "",
+        "application_open": "Open"
     }
     config = {
         "profile": {"skills": ["Python"], "locations": ["Remote"]},
@@ -56,9 +59,10 @@ def test_experience_unknown():
 def test_experience_unparsable():
     job = {
         "title": "Python Developer",
-        "description": "Valid job description.",
+        "description": "Python backend development.",
         "location": "Remote",
-        "experience": "Extensive experience required"
+        "experience": "Extensive experience required",
+        "application_open": "Open"
     }
     config = {
         "profile": {"skills": ["Python"], "locations": ["Remote"]},

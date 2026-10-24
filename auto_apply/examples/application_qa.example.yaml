@@ -1,0 +1,30 @@
+schema_version: 1
+questions:
+  - id: EXAMPLE001
+    category: screening
+    question: What is your preferred notice period?
+    exact_labels:
+      - What is your preferred notice period?
+    answer: null
+    reviewed: false
+    reuse: exact_question
+    scope:
+      countries: [India]
+  - id: EXAMPLE002
+    category: authorization
+    question: Are you legally authorized to work in India?
+    answer: null
+    reviewed: false
+    reuse: exact_question
+    country: India
+    fact: work_authorization
+    scope:
+      countries: [India]
+  - id: EXAMPLE003
+    category: agreements
+    question: Please Review the NDA and indicate your agreement by typing your full name below
+    answer: null
+    reviewed: false
+    reuse: manual_per_application
+    scope:
+      countries: [India]

@@ -45,6 +45,7 @@ preview_superclaims.py
 sessions/
 resume/
 config.yaml
+application_qa.yaml
 
 # Python builds
 *.egg-info/
@@ -56,3 +57,7 @@ auto_apply/test_*.py
 !auto_apply/tests/
 auto_apply/new_funcs.py
 auto_apply/patch.py
+auto_apply/debug.py
+print_pilot.py
+test_results.txt
+

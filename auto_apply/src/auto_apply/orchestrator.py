@@ -1,3 +1,4 @@
+from datetime import datetime
 """
 Orchestrator for the job auto-apply workflow.
 
@@ -18,9 +19,17 @@ from .tracker import TrackerDB
 
 def load_config():
     """Load config.yaml from the repository root (three levels above this file)."""
-    config_path = Path(__file__).resolve().parents[3] / "config.yaml"
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
+    import os
+    override = os.environ.get("AUTO_APPLY_CONFIG")
+    config_path = Path(override).expanduser() if override else Path(__file__).resolve().parents[3] / "config.yaml"
+    try:
+        with open(config_path, "r") as f:
+            config = yaml.safe_load(f)
+    except yaml.YAMLError as exc:
+        raise ValueError("Configuration contains invalid YAML.") from exc
+    if not isinstance(config, dict):
+        raise ValueError("Configuration must be a mapping.")
+    return config
 
 
 # ---------------------------------------------------------------------------
@@ -83,15 +92,20 @@ def score_job(job: dict, config: dict) -> dict:
 
     # --- Skill matching (title and description) --------
     profile_skills = profile.get("skills", [])
+    description_skills = []
     for skill in profile_skills:
         skill_lower = skill.lower()
         if _skill_in_text(skill_lower, title) or _skill_in_text(skill_lower, description):
             if skill not in matched_skills:
                 matched_skills.append(skill)
             score += 10
+        if _skill_in_text(skill.lower(), description):
+            description_skills.append(skill)
 
     if not description:
         missing_data.append("Missing description")
+    elif not description_skills:
+        uncertainties.append("The description does not establish a verified stack match; title matching alone is insufficient")
     if not experience:
         missing_data.append("Experience requirements unknown")
     else:
@@ -99,32 +113,57 @@ def score_job(job: dict, config: dict) -> dict:
         candidate_exp = None
         try:
             if candidate_exp_str is not None:
-                candidate_exp = int(candidate_exp_str)
-        except ValueError:
+                candidate_exp = float(candidate_exp_str)
+                import math
+                if not math.isfinite(candidate_exp) or candidate_exp < 0:
+                    candidate_exp = None
+        except (TypeError, ValueError):
             pass
 
-        import re
         word_to_num = {
             "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
             "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10
         }
-        
+
         # Convert word numbers to digits in the string before regex search
         exp_lower = experience.lower()
         for word, num in word_to_num.items():
             exp_lower = re.sub(r'\b' + word + r'\b', str(num), exp_lower)
-            
-        match = re.search(r'(\d+)\s*(?:\+|-|to)?\s*(\d+)?\s*(?:years?|yrs?)', exp_lower)
+
+        match = re.search(r'(?<![\d.])(\d+(?:\.\d+)?)\s*(?:\+|[-–—]|to)?\s*(\d+(?:\.\d+)?)?\s*(?:years?|yrs?)', exp_lower)
         if match:
-            req_exp = int(match.group(1))
+            req_exp = float(match.group(1))
             if candidate_exp is not None:
                 if req_exp > candidate_exp:
                     genuine_mismatch = True
-                    exclusion_assessment = f"Excluded (Requires {req_exp} years experience, candidate has {candidate_exp})"
+                    exclusion_assessment = f"Excluded (Requires {req_exp:g} years experience, candidate has {candidate_exp:g})"
             else:
                 uncertainties.append(f"Candidate experience is unknown, but job requires {req_exp} years")
         else:
             uncertainties.append(f"Could not parse required years from experience text: '{experience}'")
+
+    # Explicit mandatory gaps cannot be overridden by keyword scores.
+    from .requirements import mandatory_gaps, required_experience_minima, skill_experience_gaps
+    for requirement in mandatory_gaps(job, profile_skills):
+        uncertainties.append(f"Lacks verified evidence for mandatory requirement: {requirement}")
+    for requirement in skill_experience_gaps(
+        str(job.get("description") or "") + "\n" + str(job.get("experience") or ""),
+        config.get("screening", {}),
+    ):
+        uncertainties.append(f"Lacks verified evidence for mandatory requirement: {requirement}")
+    minima = required_experience_minima(job.get("description"))
+    if minima:
+        try:
+            declared = float(config.get("screening", {}).get("years_of_experience"))
+            import math
+            if not math.isfinite(declared) or declared < 0:
+                raise ValueError()
+        except (TypeError, ValueError):
+            uncertainties.append("Candidate experience is unknown for the description's requirement")
+        else:
+            if max(minima) > declared:
+                genuine_mismatch = True
+                exclusion_assessment = f"Excluded (Description requires {max(minima):g} years experience, candidate has {declared:g})"
 
     # --- Target-title matching ---------------------------------------------
     target_titles = profile.get("target_titles", [])
@@ -186,7 +225,9 @@ def score_job(job: dict, config: dict) -> dict:
     profile_locations = [loc.lower() for loc in profile.get("locations", [])]
     job_location = _normalise(job.get("location", ""))
 
-    if any(pl in job_location for pl in profile_locations) or "remote" in job_location:
+    country = str(job.get("country") or "").strip().lower()
+    if (any(_skill_in_text(pl, job_location) for pl in profile_locations)
+        or (country in ("india", "in") and "india" in profile_locations)):
         location_assessment = "Match"
     elif not job_location:
         location_assessment = "Unknown"
@@ -223,6 +264,9 @@ def is_eligible(job: dict, config: dict, score_data: dict):
 
     if score_data["genuine_mismatch"]:
         return False, f"Genuine mismatch: {score_data['seniority_assessment']}"
+    avail = str(job.get("application_open", "")).strip().lower()
+    if avail in ("false", "no", "closed", "0"):
+        return False, "Excluded: Application is closed"
 
     # Minimum score gate (default 10)
     min_score = filters.get("min_score", 10)
@@ -238,7 +282,7 @@ def is_eligible(job: dict, config: dict, score_data: dict):
 
     # Enforce unknown availability
     avail = str(job.get("application_open", "")).strip().lower()
-    if avail in ("unknown", "", "none"):
+    if avail not in ("true", "yes", "open", "available", "1", "false", "no", "closed", "0"):
         return None, "Needs review: Application availability Unknown"
     if avail in ("false", "no", "closed"):
         return False, "Excluded: Application is closed"
@@ -264,6 +308,8 @@ def format_job_preview(job: dict, config: dict, score_data: dict,
         f"URL:       {job.get('job_url') or job.get('apply_url')}",
         f"Score:     {score_data['score']}",
     ]
+    if job.get("apply_url") and job["apply_url"] != job.get("job_url"):
+        lines.append(f"Form URL:  {job['apply_url']}")
     if score_data["title_match_reason"]:
         lines.append(f"Title fit: {score_data['title_match_reason']}")
     lines.append(f"Seniority: {score_data['seniority_assessment']}")
@@ -293,7 +339,8 @@ def format_job_preview(job: dict, config: dict, score_data: dict,
 # ---------------------------------------------------------------------------
 
 def run_workflow(platform=None, dry_run=False, db_path=None):
-    config = load_config()
+    import copy
+    config = copy.deepcopy(load_config())
 
     # Validate that profile loaded properly
     profile = config.get("profile", {})
@@ -324,7 +371,7 @@ def run_workflow(platform=None, dry_run=False, db_path=None):
     eligible_count = 0
     review_count = 0
     excluded_count = 0
-    
+
     evaluated_jobs = []
     for job in pending_jobs:
         score_data = score_job(job, config)
@@ -406,7 +453,7 @@ def run_workflow(platform=None, dry_run=False, db_path=None):
 
         if ans == 'r':
             print("  Opening browser for application...")
-            status, evidence = execute_application_automated(job, config)
+            status, evidence = execute_application_automated(job, config, unattended=False)
             print(f"  Result: {status}")
             if evidence:
                 print(f"  Evidence: {evidence}")
@@ -426,4 +473,226 @@ def run_workflow(platform=None, dry_run=False, db_path=None):
     tracker.close()
 
 
+
 from .automation import execute_application_automated
+
+def _selected_records(tracker, job_ids):
+    from .authorization import validate_job_ids
+    ids = validate_job_ids(job_ids)
+    placeholders = ",".join("?" for _ in ids)
+    rows = tracker._con.execute(
+        f"SELECT * FROM applications WHERE id IN ({placeholders}) ORDER BY id", ids
+    ).fetchall()
+    records = [dict(row) for row in rows]
+    if [job["id"] for job in records] != ids:
+        raise ValueError("One or more requested job IDs do not exist in this database.")
+    return records
+
+def _database_path(config, db_path=None):
+    if db_path:
+        return Path(db_path).expanduser().resolve()
+    configured = Path(config.get("paths", {}).get("db_path", "tracker.db")).expanduser()
+    return configured.resolve() if configured.is_absolute() else (Path(__file__).resolve().parents[3] / configured).resolve()
+
+def _submission_eligibility(job, config):
+    from .settings import approved_fixture_url, greenhouse_identity, job_application_url
+    if job.get("platform") != "greenhouse":
+        return None, "This platform is outside the automatic submission allowlist."
+    try:
+        url = job_application_url(job)
+    except ValueError as exc:
+        return None, str(exc)
+    fixture = approved_fixture_url(url, config)
+    if job.get("is_fixture") and not fixture:
+        return None, "This is a quarantined fixture, not a live application candidate."
+    if not greenhouse_identity(url) and not fixture:
+        return None, "The URL is not a supported Greenhouse job origin."
+    country = str(job.get("country") or "").strip().casefold()
+    location = str(job.get("location") or "")
+    if country and country not in ("india", "in"):
+        return None, "Automatic submission is currently scoped to India-based jobs."
+    if not country and not re.search(r"\bindia\b", location, re.I):
+        return None, "The job's India work location is not established; review its country first."
+    if job.get("review_reason"):
+        return None, f"Unresolved recorded review: {job['review_reason']}"
+    return is_eligible(job, config, score_job(job, config))
+
+def preview_batch(platform="greenhouse", db_path=None, job_ids=None):
+    """Read-only queue inspection; imports no browser code into an active session."""
+    import copy
+    config = copy.deepcopy(load_config())
+    tracker = TrackerDB(_database_path(config, db_path), dry_run=True)
+    try:
+        jobs = _selected_records(tracker, job_ids) if job_ids is not None else tracker.get_pending_jobs(platform=platform)
+        counts = {"eligible": 0, "review": 0, "excluded": 0, "already_processed": 0}
+        for job in jobs:
+            if job["status"] not in ("pending", "failed", "paused"):
+                counts["already_processed"] += 1
+                print(f"Job {job['id']}: status={job['status']} (not queued for submission)")
+                continue
+            eligible, reason = _submission_eligibility(job, config)
+            counts["eligible" if eligible is True else "excluded" if eligible is False else "review"] += 1
+            print(f"Job ID: {job['id']} | Status: {job['status']}")
+            print(format_job_preview(job, config, score_job(job, config), reason, eligible))
+        print("Read-only preview: " + ", ".join(f"{key}={value}" for key, value in counts.items()))
+        return counts
+    finally:
+        tracker.close()
+
+def _run_authorized(job_ids, auth_file, db_path, retry_failed=False, resume=False, profile_path=None):
+    from .authorization import AuthorizationError, validate_authorization, validate_job_ids
+    from .settings import browser_profile
+    from .submission_guard import SubmissionGuard, SubmissionBlocked
+
+    ids = validate_job_ids(job_ids)
+    import copy
+    config = copy.deepcopy(load_config())
+    if profile_path:
+        if "browser" not in config:
+            config["browser"] = {}
+        config["browser"]["user_data_dir"] = str(profile_path)
+    resolved = _database_path(config, db_path)
+    # Validate against an existing database without schema writes.
+    reader = TrackerDB(resolved, dry_run=True)
+    try:
+        approved_records = _selected_records(reader, ids)
+        manifest = validate_authorization(auth_file, ids, config, approved_records, db_path=resolved)
+        approved_profile = browser_profile(config)
+        if resume:
+            if len(ids) != 1:
+                raise AuthorizationError("Resume executes one explicit job at a time.")
+            candidates = [job for job in approved_records if job["status"] == "paused"]
+            if not candidates:
+                raise ValueError("Only a paused, unsubmitted job can be resumed.")
+        else:
+            statuses = {"pending", "failed"} if retry_failed else {"pending"}
+            candidates = [job for job in approved_records if job["status"] in statuses]
+    finally:
+        reader.close()
+
+    eligible_jobs = []
+    for job in candidates:
+        eligible, reason = _submission_eligibility(job, config)
+        if eligible is True:
+            eligible_jobs.append(job)
+        else:
+            print(f"Job {job['id']} stays unchanged: {reason}")
+    if not eligible_jobs:
+        print("No eligible approved jobs. No browser or database writes.")
+        return
+
+    tracker = TrackerDB(resolved, dry_run=False)
+    try:
+        def preflight(connection):
+            latest_config = copy.deepcopy(load_config())
+            if profile_path:
+                if "browser" not in latest_config:
+                    latest_config["browser"] = {}
+                latest_config["browser"]["user_data_dir"] = str(profile_path)
+            current = _selected_records(tracker, manifest["approved_jobs"])
+            latest = validate_authorization(
+                auth_file, manifest["approved_jobs"], latest_config, current, db_path=resolved
+            )
+            if latest["phase"] != manifest["phase"] or latest.get("reviewed_pilot") != manifest.get("reviewed_pilot"):
+                raise AuthorizationError("Approval scope changed during this execution.")
+            for row in current:
+                if row["id"] == active_job["id"]:
+                    allowed, reason = _submission_eligibility(row, latest_config)
+                    if allowed is not True:
+                        raise SubmissionBlocked(f"Eligibility changed before submission: {reason}")
+
+        guard = SubmissionGuard(tracker, manifest, preflight)
+        print(f"Approved {manifest['phase']} scope: {len(ids)} jobs. Pilot ID: {guard.pilot_id}")
+        for active_job in eligible_jobs:
+            print(f"Preparing job {active_job['id']}: {active_job['title']} at {active_job['company']}")
+            # A single-job resume can be authorized by a multi-job manifest too.
+            status, evidence = execute_application_automated(
+                active_job, config, unattended=not resume,
+                on_before_submit=lambda: guard.reserve(active_job["id"]),
+                expected_profile=approved_profile,
+            )
+            status, evidence = guard.complete(active_job["id"], status, evidence)
+            print(f"Job {active_job['id']}: {status} | {evidence}")
+            if status in ("deferred", "paused", "unconfirmed"):
+                print("Batch stopped for limit handling or human review.")
+                break
+        print("Authorized session finished.")
+    finally:
+        tracker.close()
+
+def run_unattended_batch(platform="greenhouse", dry_run=False, db_path=None,
+                         retry_failed=False, job_ids=None, auth_file=None, profile_path=None):
+    if platform not in (None, "greenhouse"):
+        raise ValueError("Only the Greenhouse adapter is allowed for automatic submission.")
+    from .authorization import validate_job_ids
+    validate_job_ids(job_ids)
+    if dry_run:
+        return preview_batch(platform="greenhouse", db_path=db_path, job_ids=job_ids)
+    return _run_authorized(job_ids, auth_file, db_path, retry_failed=retry_failed, profile_path=profile_path)
+
+def run_resume_job(job_id, auth_file=None, db_path=None, dry_run=False, profile_path=None):
+    from .authorization import AuthorizationError, validate_job_ids
+    import json
+    validate_job_ids([job_id])
+    if dry_run:
+        return preview_batch(db_path=db_path, job_ids=[job_id])
+    if not auth_file:
+        raise AuthorizationError("Resume requires the original approval manifest.")
+    try:
+        manifest = json.loads(Path(auth_file).read_text(encoding="utf-8"))
+        ids = validate_job_ids(manifest["approved_jobs"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise AuthorizationError("Resume approval is missing or malformed.") from exc
+    if job_id not in ids:
+        raise AuthorizationError("The resumed job is not in the approved scope.")
+    return _run_resume_scope(job_id, ids, auth_file, db_path, profile_path)
+
+def _run_resume_scope(job_id, approved_ids, auth_file, db_path, profile_path=None):
+    # Retain the complete original approval scope while executing only one job.
+    from .authorization import AuthorizationError, validate_authorization
+    from .submission_guard import SubmissionGuard, SubmissionBlocked
+    import copy
+    config = copy.deepcopy(load_config())
+    if profile_path:
+        if "browser" not in config:
+            config["browser"] = {}
+        config["browser"]["user_data_dir"] = str(profile_path)
+    resolved = _database_path(config, db_path)
+    reader = TrackerDB(resolved, dry_run=True)
+    try:
+        records = _selected_records(reader, approved_ids)
+        manifest = validate_authorization(auth_file, approved_ids, config, records, db_path=resolved)
+        job = next(row for row in records if row["id"] == job_id)
+        if job["status"] != "paused":
+            raise ValueError("Resume accepts only paused jobs; ambiguous attempts require reconciliation.")
+        allowed, reason = _submission_eligibility(job, config)
+        if allowed is not True:
+            print(f"Job {job_id} stays paused: {reason}")
+            return
+    finally:
+        reader.close()
+    tracker = TrackerDB(resolved, dry_run=False)
+    try:
+        def preflight(connection):
+            current = _selected_records(tracker, approved_ids)
+            latest_config = copy.deepcopy(load_config())
+            if profile_path:
+                if "browser" not in latest_config:
+                    latest_config["browser"] = {}
+                latest_config["browser"]["user_data_dir"] = str(profile_path)
+            latest = validate_authorization(auth_file, approved_ids, latest_config, current, db_path=resolved)
+            if latest["phase"] != manifest["phase"]:
+                raise AuthorizationError("Approval phase changed during resume.")
+            row = next(row for row in current if row["id"] == job_id)
+            allowed, reason = _submission_eligibility(row, latest_config)
+            if allowed is not True:
+                raise SubmissionBlocked(f"Eligibility changed before resume: {reason}")
+        guard = SubmissionGuard(tracker, manifest, preflight)
+        status, evidence = execute_application_automated(
+            job, config, unattended=False,
+            on_before_submit=lambda: guard.reserve(job_id),
+        )
+        status, evidence = guard.complete(job_id, status, evidence)
+        print(f"Resume result for job {job_id}: {status} | {evidence}")
+    finally:
+        tracker.close()
